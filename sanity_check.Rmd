@@ -1,0 +1,106 @@
+---
+title: "Sanity Check"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Customized pricing
+
+This part corresponds to Section 5.1 in the paper, and my goal is to replicate Figure 1. 
+
+Each data point consists of a feature vector $z\in\mathbb{R}^d,p$ and purchase decision $y$.
+
+```{r}
+data_generating <- function(k, d, n, gamma, beta){
+  
+  # This function is for generating data for both training set and test set
+  
+  # k: number of possible discrete prices
+  # d: number of features
+  # n: number of training sample
+  # gamma: coefficients for feature vector z
+  # beta: coefficients for price vector
+  
+  library(MASS) # package for mvrnorm
+  
+  p <- seq(from = 5, to = 20, length.out = k) # a price set of size k by evenly spacing prices on [5, 20]
+  
+  z <- mvrnorm(n, rep(0,d), diag(0.7, d, d) + matrix(0.3, d, d)) # feature vector z of size d 
+  
+  data_sample <- cbind(sample(p, size=n, replace = TRUE, prob=rep(1/k, k)), z) # training sample consists of randomly drawn price and feature vector
+  
+  v <- data_sample[ ,2:ncol(data_sample)] %*% matrix(gamma, d, 1) + matrix(beta %*% sapply(data_sample[,1], function(x) x==p), n, 1) # mean purchasing utility for each customer
+  
+  data_sample <- data.frame(data_sample) 
+  names(data_sample)[1] <- "p" # rename the first variable as price "p"
+  data_sample$prob <- 1/(1+exp(-v)) # calculate purchase probability 
+  data_sample$y <- data_sample$prob>0.5 # observed outcome based on purchase probability and cutoff at 0.5
+  
+  return(data_sample)
+}
+```
+
+```{r}
+true_model_revenue <- function(k, d, beta, gamma, test_set){
+  
+  p <- seq(from = 5, to = 20, length.out = k) # a price set of size k by evenly spacing prices on [5, 20]
+  
+  for (t in 1:k){
+    test_set[,ncol(test_set)+1] <- as.matrix(test_set[ ,2:(d+1)]) %*% matrix(gamma, d, 1) + beta[t]  # mean purchasing utility for each customer under each price level
+    test_set[,ncol(test_set)] <- 1/(1+exp(-test_set[ ,ncol(test_set)])) * p[t] # expected profit under each price level
+  }
+  
+  revenue <- sum(apply(test_set[ ,(ncol(test_set)-k+1):ncol(test_set)], 1, max)) # the optimal revenue under personalized pricing
+  
+  return(revenue)
+}
+```
+
+```{r}
+single_price_revenue <- function(k, d, beta, gamma, test_set){
+  
+  p <- seq(from = 5, to = 20, length.out = k) # a price set of size k by evenly spacing prices on [5, 20]
+  
+  for (t in 1:k){
+    test_set[,ncol(test_set)+1] <- as.matrix(test_set[ ,2:(d+1)]) %*% matrix(gamma, d, 1) + beta[t]  # mean purchasing utility for each customer under each price level
+    test_set[,ncol(test_set)] <- 1/(1+exp(-test_set[ ,ncol(test_set)])) * p[t] # expected profit under each price level
+  }
+  
+  revenue <- max(colSums(test_set[,(ncol(test_set)-k+1):ncol(test_set)])) # the optimal revenue under single price policy
+  
+  return(revenue)
+}
+```
+
+```{r}
+personalized <- function(k, d, beta, gamma, test_set){
+  
+}
+```
+
+### Simulation
+
+```{r}
+k = c(2, 4, 10) # number of discrete prices
+d = c(5, 10, 15) # number of features 
+n = c(100, 300, 500) # number of training samples
+set.seed(314) # set seed for reproducibility
+
+## Well-specified case, k = 2, d = 5
+
+### Generating underlying parameters, training set and test set
+gamma <- rnorm(d[1], 0, 1.5) 
+beta <- sort(rnorm(k[1], 0, 3), decreasing = TRUE) 
+train_k2_d5_n100 <- data_generating(k[2], d[1], n[1], gamma, beta)
+train_k2_d5_n300 <- data_generating(k[2], d[1], n[2], gamma, beta)
+train_k2_d5_n500 <- data_generating(k[2], d[1], n[3], gamma, beta)
+test_k2_d5_n100 <- data_generating(k[1], d[1], 10, gamma, beta)
+
+### Comparison between different methods
+true_model_revenue(k[1], d[1], beta, gamma, test_k2_d5_n100)
+single_price_revenue(k[1], d[1], beta, gamma, test_k2_d5_n100)
+```
+
