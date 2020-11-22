@@ -7,150 +7,277 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# Customized pricing
+# Customized pricing problem
 
-In the sanity check, I focus on the customized pricing problem and implement the personalized revenue management method. 
-
-## Numerical Experiments Setup
-
-For the synthetic data used for numerical experiments, each data point consists of a feature vector $z\in\mathbb{R}^d$, price $p$ and purchase decision $y$.
-
-### Data generation
+## Customers' data generation
 
 ```{r}
-library(caret) # package for fitting logistic regression
 library(MASS) # package for mvrnorm
 
-training_data <- function(k, d, n, gamma, beta){
+customer_generation <- function(c, d){
+  ## customers' data generation
+  ## each row contains a customer' id and feature vector
   
-  # k: number of possible discrete prices
-  # d: number of features
-  # n: size of training sample
-  # gamma: coefficients for feature vector z
-  # beta: coefficients for price vector
+  id <- c(1:c) # customers' id
+  z <- mvrnorm(c, rep(0,d), diag(0.7, d, d) + matrix(0.3, d, d)) # customers' feature vector 
+  
+  z <- as.data.frame(z)
+  names(z) <- paste("z", c(1:d), sep="") # rename features' name
+  
+  customer_info <- cbind(id, z)
+  
+  return(customer_info)
+  
+}
+```
 
-  p <- seq(from = 5, to = 20, length.out = k) # a price set of size k by evenly spacing prices on [5, 20]
-  z <- mvrnorm(n, rep(0,d), diag(0.7, d, d) + matrix(0.3, d, d)) # feature vector z of size d 
-  p_set <- sample(p, size=n, replace = TRUE, prob=rep(1/k, k)) # randomly drawn price
+## Optimal revenue under full information
+
+```{r}
+optimal_revenue <- function(p, customer_info, gamma, beta){
+  
+  ## p: possible prices to set
+  ## customer_info: customers' information table
+  ## gamma, beta: true coefficients associated with each customer
+  
+  revenue <- matrix(rep(0, 4*nrow(customer_info)), nrow(customer_info), 4) # save expected revenue for each customer under each price level
+  customer_info <- cbind(customer_info, revenue)
+  m <- ncol(customer_info)
+  
+  for (i in 1:4){
+    customer_info_1 <- customer_info
+    customer_info_1[, m-4+i] <- 1 # set price level i for each customer
     
-  data_sample <- cbind(z, t(sapply(p_set, function(x) x==p))) # combine feature vector and randomly drawn price
+    v <- rowSums(customer_info_1[,c(2:(m-4))] * gamma) + rowSums(customer_info_1[,c((m-3):m)] * beta) # mean utility for each customer under each price level
+    revenue[,i] <- p[i]/(1+exp(-v)) # expected profit for each customer under each price level
+  }
   
-  v <- data_sample %*% c(gamma, beta) # mean purchasing utility for each customer
-  prob <- 1/(1+exp(-v)) # calculate purchase probability 
-  y <- prob >= 0.5 # observed outcome based on purchase probability and cutoff at 0.5
-  data_sample <- cbind(data_sample, y)
+  oracle_optimum <- sum(apply(revenue, MARGIN=1, FUN=max)) # get row wise max for each individual and add up
+  
+  return(oracle_optimum)
+  
+}
+
+```
+
+## Implementation of different levels of personalized revenue management
+
+```{r}
+library(caret)
+
+prm_pooled <- function(p, customer_info, gamma, beta, customer_purchase){
+  
+  ## Model 1: v_{ij} = \gamma z_i + \beta p
+  ## p: possible prices to set
+  ## customer_info: customers' information table
+  ## gamma, beta: true coefficients associated with each customer
+  ## customer_purchase: observational data used to fit the model
+  
+  prm_fit <- train(y~., data=customer_purchase[,-1], trControl=trainControl("none"), method="glm", family="binomial") # fit logistic choice model
+  
+  revenue <- matrix(rep(0, 4*nrow(customer_info)), nrow(customer_info), 4) # save expected revenue for each customer under each price level given model 1
+  customer_info <- cbind(customer_info, revenue)
+  m <- ncol(customer_info)
+  
+  for (i in 1:4){
+    customer_info_1 <- customer_info
+    customer_info_1[, m-4+i] <- 1 # set price level i for each customer
+    revenue[,i] <- p[i] * predict(prm_fit, customer_info_1[,-1]) # expected profit for each customer under each price level given model 1
+  }
+  
+  customer_info[,(m-3):m] <- matrix(as.numeric(revenue == apply(revenue, MARGIN=1, FUN=max)), ncol=4) # get the prescription from model 1
+  
+  v <- rowSums(customer_info[,c(2:(m-4))] * gamma) + rowSums(customer_info[,c((m-3):m)] * beta) # mean utility under full information
+  model1 <- sum(as.matrix(customer_info[,c((m-3):m)]) %*% p * 1/(1+exp(-v))) # expected revenue under full information
+
+  return(model1)
+
+}
+```
+
+```{r}
+prm_fixed_effect <- function(p, customer_info, gamma, beta, customer_purchase){
+  
+  ## Model 2: v_{ij} = \gamma_i z_i + \beta p
+  ## p: possible prices to set
+  ## customer_info: customers' information table
+  ## gamma, beta: true coefficients associated with each customer
+  ## customer_purchase: observational data used to fit the model
+  
+  customer_purchase$id <- as.factor(customer_purchase$id)
+  customer_info$id <- as.factor(customer_info$id)
+  prm_fit_fixed <- train(y~., data=customer_purchase, trControl=trainControl("none"), method="glm", family="binomial") # fit logistic choice model with fixed effects for each customer
+  
+  revenue <- matrix(rep(0, 4*nrow(customer_info)), nrow(customer_info), 4) # save expected revenue for each customer under each price level given model 2
+  customer_info <- cbind(customer_info, revenue)
+  m <- ncol(customer_info)
+  
+  for (i in 1:4){
+    customer_info_1 <- customer_info
+    customer_info_1[, m-4+i] <- 1 # set price level i for each customer
+    revenue[,i] <- p[i] * predict(prm_fit_fixed, customer_info_1) # expected profit for each customer under each price level given model 2
+  }
+  
+  customer_info[,(m-3):m] <- matrix(as.numeric(revenue == apply(revenue, MARGIN=1, FUN=max)), ncol=4) # get the prescription from model 2
+  
+  v <- rowSums(customer_info[,c(2:(m-4))] * gamma) + rowSums(customer_info[,c((m-3):m)] * beta) # mean utility under full information
+  model2 <- sum(as.matrix(customer_info[,c((m-3):m)]) %*% p * 1/(1+exp(-v))) # expected revenue under full information
+
+  return(model2)
+
+}
+
+```
+
+```{r}
+prm_individual <- function(p, customer_info, gamma, beta, customer_purchase){
+  
+  ## Model 2: v_{ij} = \gamma_i z_i + \beta_i p
+  ## p: possible prices to set
+  ## customer_info: customers' information table
+  ## gamma, beta: true coefficients associated with each customer
+  ## customer_purchase: observational data used to fit the model
+  
+  revenue <- matrix(rep(0, 4*nrow(customer_info)), nrow(customer_info), 4) # save expected revenue for each customer under each price level given model 3
+  customer_info <- cbind(customer_info, revenue)
+  m <- ncol(customer_info)
+  
+  prm_fit_fixed <- train(y~., data=customer_purchase, trControl=trainControl("none"), method="glm", family="binomial") # fit logistic choice model with fixed effects for each customer
+  
+  for (i in (1:nrow(customer_info))) {
     
-  data_sample <- data.frame(data_sample) 
-  names(data_sample)[ncol(data_sample)] <- "y" # rename the response variable as "y"
-  
-  return(data_sample)
-}
-
-test_data <- function(k, d, n){
-  
-  # k: number of possible discrete prices
-  # d: number of features
-  # n: size of training sample
-  
-  z <- mvrnorm(n, rep(0,d), diag(0.7, d, d) + matrix(0.3, d, d)) # feature vector z of size d 
-  data_sample <- cbind(z, matrix(rep(0,k*n),n,k)) # initialize price columns to set
-  
-  return(data_sample)
-}
-```
-
-### Optimal revenue
-
-```{r}
-optimal_revenue <- function(k, gamma, beta, testing){
-  
-  p <- seq(from = 5, to = 20, length.out = k) # a price set of size k by evenly spacing prices on [5, 20]
-  revenue <- matrix(rep(0,k*nrow(testing)), nrow(testing), k) # save expected revenue
-  
-  for (i in 1:k){
-    testing_1 <- testing
-    testing_1[, ncol(testing)-k+i] <- 1 
-    v <- testing_1 %*% c(gamma, beta) # true mean purchasing utility for each customer
-    revenue[,i] <- p[i]/(1+exp(-v)) # calculate expected profit for each price level
+    prm_ind <- train(y~., data=customer_purchase[which(customer_purchase$id==i),], trControl=trainControl("none"), method="glm", family="binomial") # fit logistic choice model for each customer
+    
+    for (j in 1:4) {
+      
+      customer_info_1 <- customer_info[which(customer_info$id==i),] 
+      customer_info_1[, m-4+j] <- 1 
+      revenue[i,j] <- p[j] * predict(prm_ind, customer_info_1)
+      
+    }
+    
   }
   
-  optimum <- sum(apply(revenue, MARGIN=1, FUN=max)) # get row wise max for each individual and add up
+  customer_info[,(m-3):m] <- matrix(as.numeric(revenue == apply(revenue, MARGIN=1, FUN=max)), ncol=4) # get the prescription from model 3
   
-  return(optimum)
-}
-```
+  v <- rowSums(customer_info[,c(2:(m-4))] * gamma) + rowSums(customer_info[,c((m-3):m)] * beta) # mean utility under full information
+  model3 <- sum(as.matrix(customer_info[,c((m-3):m)]) %*% p * 1/(1+exp(-v))) # expected revenue under full information
 
-### Single price policy
-
-```{r}
-single_price <- function(k, gamma, beta, testing){
-  
-  p <- seq(from = 5, to = 20, length.out = k) # a price set of size k by evenly spacing prices on [5, 20]
-  revenue <- matrix(rep(0,k*nrow(testing)), nrow(testing), k) # save expected revenue
-  
-  for (i in 1:k){
-    testing_1 <- testing
-    testing_1[, ncol(testing)-k+i] <- 1 
-    v <- testing_1 %*% c(gamma, beta) # true mean purchasing utility for each customer
-    revenue[,i] <- p[i]/(1+exp(-v)) # calculate expected profit for each price level
-  }
-  
-  optimum <- max(colSums(revenue)) # get optimal column wise sum
-  
-  return(optimum)
+  return(model3)
   
 }
 ```
 
-### Personalized revenue management 
+## Experiments
 
 ```{r}
-prm <- function(k, gamma, beta, training, testing){
+experiment <- function(c, n, d){
   
-  p <- seq(from = 5, to = 20, length.out = k) # a price set of size k by evenly spacing prices on [5, 20]
+  ## c = number of customers
+  ## n = number of data points for each customer
+  ## d = dimensions of customers' characteristics
   
-  prm_fit <- train(y~., data=training, trControl=trainControl("none"), method="glm", family="binomial") # fit logistic choice model
+  customer_info <- customer_generation(c, d) # id and feature vector
+  customer_purchase <- customer_info[rep(1:c, each=n), ] # n observations for each customer
   
-  revenue <- matrix(rep(0,k*nrow(testing)), nrow(testing), k) # save expected revenue
+  p <- seq(from = 5, to = 20, length.out = 4) # 4 possible price levels
+  p_set <- sample(p, size=c*n, replace = TRUE, prob=rep(1/4, 4)) # price is set randomly
+  customer_purchase <- cbind(customer_purchase, t(sapply(p_set, function(x) as.numeric(x==p))))
   
-  for (i in 1:k){
-    testing_1 <- testing
-    testing_1[, ncol(testing)-k+i] <- 1 
-    revenue[,i] <- p[i] * predict(prm_fit, data.frame(testing_1)) # calculate expected profit for each price level
-  }
+  gamma <- mvrnorm(c, rep(0,d), diag(1.5, d, d)) # customers' coefficients for feature vectors 
+  gamma_purchase <- gamma[rep(1:c, each=n), ]
   
-  prm_prescription <- testing
-  prm_prescription[,(ncol(prm_prescription)-k+1):ncol(prm_prescription)] <- (revenue == apply(revenue, MARGIN=1, FUN=max)) # get the prescription from PRM
-  
-  v <- prm_prescription %*% c(gamma, beta) # true mean purchasing utility for each customer
-  optimum <- sum(prm_prescription[,(ncol(prm_prescription)-k+1):ncol(prm_prescription)] %*% p * 1/(1+exp(-v))) # expected revenue
+  beta <- t(apply(mvrnorm(c, rep(0,4), diag(3, 4, 4)), 1, sort, decreasing = TRUE)) # customers' price coefficients
+  beta_purchase <- beta[rep(1:c, each=n), ]
 
-  return(optimum)
-
+  v <- rowSums(customer_purchase[,c(2:(d+1))] * gamma_purchase) + rowSums(customer_purchase[,c((d+2):(d+5))] * beta_purchase) # customers' mean utility of purchase
+  prob <- 1/(1+exp(-v)) # probability of purchase
+  y <- sapply(prob, function(x) rbinom(n=1,size=1,x)) # outcome is Bernoulli with probability of purchase 
+  customer_purchase <- cbind(customer_purchase, y)
+  
+  # Oracle revenue under full information
+  oracle <- optimal_revenue(p, customer_info, gamma, beta)
+  
+  # Revenue under model 1
+  model_1_rev <- prm_pooled(p, customer_info, gamma, beta, customer_purchase)
+  
+  # Revenue under model 2
+  model_2_rev <- prm_fixed_effect(p, customer_info, gamma, beta, customer_purchase)
+  
+  # Revenue under model 3
+  model_3_rev <- prm_individual(p, customer_info, gamma, beta, customer_purchase)
+  
+  return(c(model_1_rev, model_2_rev, model_3_rev)/oracle)
+  
 }
 ```
 
-### Simulation
+## Simulation
 
-```{r}
-k = c(4, 10) # number of discrete prices
-d = c(5, 10, 15) # number of features 
-n = c(100, 300, 500) # number of training samples
-set.seed(314) # set seed for reproducibility
+```{r, warning = FALSE}
+set.seed(314)
 
-## k = 4, d = 5
+c_5_n_5_d_5 <- matrix(0, nrow=100, ncol=3)
+c_5_n_10_d_5 <- matrix(0, nrow=100, ncol=3) 
+c_5_n_20_d_5 <- matrix(0, nrow=100, ncol=3)
+c_5_n_50_d_5 <- matrix(0, nrow=100, ncol=3)
 
-### Generating underlying parameters, training set and test set
-gamma <- rnorm(d[1], 0, 1.5) 
-beta <- sort(rnorm(k[1], 0, 3), decreasing = TRUE) 
+c_5_n_5_d_10 <- matrix(0, nrow=100, ncol=3)
+c_5_n_10_d_10 <- matrix(0, nrow=100, ncol=3) 
+c_5_n_20_d_10 <- matrix(0, nrow=100, ncol=3) 
+c_5_n_50_d_10 <- matrix(0, nrow=100, ncol=3) 
 
-train_k4_d5_n100 <- training_data(k[1], d[1], n[1], gamma, beta)
-test_k4_d5_n500 <- test_data(k[1], d[1], n[3])
+c_10_n_5_d_5 <- matrix(0, nrow=100, ncol=3)
+c_10_n_10_d_5 <- matrix(0, nrow=100, ncol=3) 
+c_10_n_20_d_5 <- matrix(0, nrow=100, ncol=3) 
+c_10_n_50_d_5 <- matrix(0, nrow=100, ncol=3) 
 
-optimal_revenue(k[1], gamma, beta, test_k4_d5_n500) # Optimal revenue
+c_10_n_5_d_10 <- matrix(0, nrow=100, ncol=3)
+c_10_n_10_d_10 <- matrix(0, nrow=100, ncol=3) 
+c_10_n_20_d_10 <- matrix(0, nrow=100, ncol=3) 
+c_10_n_50_d_10 <- matrix(0, nrow=100, ncol=3) 
 
-single_price(k[1], gamma, beta, test_k4_d5_n500) # Optimal revenue under single price
+for (i in 1:100) {
+  
+  c_5_n_5_d_5[i,] <- experiment(c=5, n=5, d=5)
+  c_5_n_10_d_5[i,] <- experiment(c=5, n=10, d=5)
+  c_5_n_20_d_5[i,] <- experiment(c=5, n=20, d=5)
+  c_5_n_50_d_5[i,] <- experiment(c=5, n=50, d=5)
+  
+  c_5_n_5_d_10[i,] <- experiment(c=5, n=5, d=10)
+  c_5_n_10_d_10[i,] <- experiment(c=5, n=10, d=10)
+  c_5_n_20_d_10[i,] <- experiment(c=5, n=20, d=10)
+  c_5_n_50_d_10[i,] <- experiment(c=5, n=50, d=10)
+  
+  c_10_n_5_d_5[i,] <- experiment(c=10, n=5, d=5)
+  c_10_n_10_d_5[i,] <- experiment(c=10, n=10, d=5)
+  c_10_n_20_d_5[i,] <- experiment(c=10, n=20, d=5)
+  c_10_n_50_d_5[i,] <- experiment(c=10, n=50, d=5)
+  
+  c_10_n_5_d_10[i,] <- experiment(c=10, n=5, d=10)
+  c_10_n_10_d_10[i,] <- experiment(c=10, n=10, d=10)
+  c_10_n_20_d_10[i,] <- experiment(c=10, n=20, d=10)
+  c_10_n_50_d_10[i,] <- experiment(c=10, n=50, d=10)
+  
+}
 
-prm(k[1], gamma, beta, train_k4_d5_n100, test_k4_d5_n500) # Optimal revenue under personalized revenue management 
+colMeans(c_5_n_5_d_5)
+colMeans(c_5_n_10_d_5)
+colMeans(c_5_n_20_d_5)
+colMeans(c_5_n_50_d_5)
+
+colMeans(c_5_n_5_d_10)
+colMeans(c_5_n_10_d_10)
+colMeans(c_5_n_20_d_10)
+colMeans(c_5_n_50_d_10)
+
+colMeans(c_10_n_5_d_5)
+colMeans(c_10_n_10_d_5)
+colMeans(c_10_n_20_d_5)
+colMeans(c_10_n_50_d_5)
+
+colMeans(c_10_n_5_d_10)
+colMeans(c_10_n_10_d_10)
+colMeans(c_10_n_20_d_10)
+colMeans(c_10_n_50_d_10)
 ```
-
